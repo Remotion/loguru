@@ -188,11 +188,19 @@ Website: www.ilikebigbits.com
 	#define LOGURU_FORMAT_STRING_TYPE const char*
 #endif
 
+#if defined(_MSC_VER)
+// Used to mark log_and_abort for the benefit of the static analyzer and optimizer.
+#define LOGURU_NORETURN __declspec(noreturn)
+
+#define LOGURU_PREDICT_FALSE(x)		(x)
+#define LOGURU_PREDICT_TRUE(x)		(x)
+#else
 // Used to mark log_and_abort for the benefit of the static analyzer and optimizer.
 #define LOGURU_NORETURN __attribute__((noreturn))
 
 #define LOGURU_PREDICT_FALSE(x) (__builtin_expect(x,     0))
 #define LOGURU_PREDICT_TRUE(x)  (__builtin_expect(!!(x), 1))
+#endif
 
 // --------------------------------------------------------------------
 
@@ -1063,21 +1071,25 @@ This will define all the Loguru functions so that the linker may find them.
 #if defined(LOGURU_IMPLEMENTATION) && !defined(LOGURU_HAS_BEEN_IMPLEMENTED)
 #define LOGURU_HAS_BEEN_IMPLEMENTED
 
-#include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <mutex>
+
+#include <algorithm> //std__min, std::max, std::find_if
+#include <atomic> // std::atomic<>
+#include <chrono> // std::chrono
+#include <mutex> //std::recursive_mutex
+#if LOGURU_STACKTRACES
 #include <regex>
-#include <string>
-#include <thread>
-#include <vector>
+#endif
+#include <string> // std::string
+#include <thread> // std::thread
+#include <vector> // std::vector
 
 #ifdef _MSC_VER
-	#include <direct.h>
+	#include <cctype>  // for isalpha
+	#include <direct.h> // https://en.wikipedia.org/wiki/Direct.h
 #else
 	#include <signal.h>
 	#include <sys/stat.h> // mkdir
@@ -1085,7 +1097,7 @@ This will define all the Loguru functions so that the linker may find them.
 #endif
 
 #ifdef __APPLE__
-    #include "TargetConditionals.h"
+	#include "TargetConditionals.h"
 #endif
 
 // TODO: use defined(_POSIX_VERSION) for some of these things?
@@ -1197,6 +1209,27 @@ namespace loguru
 
 	bool terminal_has_color() { return s_terminal_has_color; }
 
+#ifdef _MSC_VER //TODO: >>>
+	// Colors
+	const char* terminal_black()      { return ""; }
+	const char* terminal_red()        { return ""; }
+	const char* terminal_green()      { return ""; }
+	const char* terminal_yellow()     { return ""; }
+	const char* terminal_blue()       { return ""; }
+	const char* terminal_purple()     { return ""; }
+	const char* terminal_cyan()       { return ""; }
+	const char* terminal_light_gray() { return ""; }
+	const char* terminal_white()      { return ""; }
+	const char* terminal_light_red()  { return ""; }
+	const char* terminal_dim()        { return ""; }
+
+	// Formating
+	const char* terminal_bold()       { return ""; }
+	const char* terminal_underline()  { return ""; }
+
+	// You should end each line with this!
+	const char* terminal_reset()      { return ""; }
+#else
 	// Colors
 	const char* terminal_black()      { return s_terminal_has_color ? "\e[30m" : ""; }
 	const char* terminal_red()        { return s_terminal_has_color ? "\e[31m" : ""; }
@@ -1216,7 +1249,7 @@ namespace loguru
 
 	// You should end each line with this!
 	const char* terminal_reset()      { return s_terminal_has_color ? "\e[0m" : ""; }
-
+#endif
 	// ------------------------------------------------------------------------------
 
 	void file_log(void* user_data, const Message& message)
@@ -1255,7 +1288,7 @@ namespace loguru
 		CHECK_F(bytes_needed >= 0, "Bad string format: '%s'", format);
 		char* buff = (char*)malloc(bytes_needed + 1);
 		vsnprintf(buff, bytes_needed, format, vlist);
-		return buff;
+		return Text(buff);
 #else
 		char* buff = nullptr;
 		int result = vasprintf(&buff, format, vlist);
@@ -1418,7 +1451,11 @@ namespace loguru
 		long long ms_since_epoch = duration_cast<milliseconds>(now.time_since_epoch()).count();
 		time_t sec_since_epoch = time_t(ms_since_epoch / 1000);
 		tm time_info;
+#if _MSC_VER 
+		localtime_s(&time_info, &sec_since_epoch);
+#else //posix
 		localtime_r(&sec_since_epoch, &time_info);
+#endif
 		snprintf(buff, buff_size, "%04d%02d%02d_%02d%02d%02d.%03lld",
 			1900 + time_info.tm_year, 1 + time_info.tm_mon, time_info.tm_mday,
 			time_info.tm_hour, time_info.tm_min, time_info.tm_sec, ms_since_epoch % 1000);
@@ -1637,6 +1674,7 @@ namespace loguru
 			}
 		}
 #else // LOGURU_PTHREADS
+		(void)right_align_hext_id;
 		buffer[0] = 0;
 #endif // LOGURU_PTHREADS
 
@@ -1751,14 +1789,18 @@ namespace loguru
 	}
 
 #else // LOGURU_STACKTRACES
-	Text demangle(const char* name)
+	/*Text demangle(const char* name)
 	{
 		return name;
-	}
+	}*/
 
 	std::string stacktrace_as_stdstring(int)
 	{
+#if defined(_MSC_VER)
+#pragma message("Loguru: No stacktraces available on this platform")
+#else
 		#warning "Loguru: No stacktraces available on this platform"
+#endif
 		return "";
 	}
 
@@ -1778,8 +1820,11 @@ namespace loguru
 		long long ms_since_epoch = duration_cast<milliseconds>(now.time_since_epoch()).count();
 		time_t sec_since_epoch = time_t(ms_since_epoch / 1000);
 		tm time_info;
+#if _MSC_VER 
+		localtime_s(&time_info, &sec_since_epoch);
+#else //posix
 		localtime_r(&sec_since_epoch, &time_info);
-
+#endif
 		auto uptime_ms = duration_cast<milliseconds>(now - s_start_time).count();
 		auto uptime_sec = uptime_ms / 1000.0;
 
@@ -2229,7 +2274,11 @@ namespace loguru
 namespace loguru {
 	void install_signal_handlers()
 	{
+#if defined(_MSC_VER)
+#pragma message("No signal handlers on Win32")
+#else
 		#warning "No signal handlers on Win32"
+#endif
 	}
 } // namespace loguru
 
